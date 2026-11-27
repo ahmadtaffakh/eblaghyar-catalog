@@ -17,6 +17,31 @@ def normalize(value: Any) -> str:
     return " ".join(text.casefold().split())
 
 
+def _record_from_manifest(manifest: dict, package_path: Path) -> dict[str, Any]:
+    parties = manifest.get("parties") or []
+    searchable = " ".join(str(manifest.get(key) or "") for key in (
+        "notice_no", "case_no", "archive_no", "issuer_unit_name",
+        "subject_type", "document_type", "notice_text", "other_data_description",
+    )) + " " + " ".join(
+        f"{item.get('role') or ''} {item.get('name') or ''}"
+        for item in parties if isinstance(item, dict)
+    )
+    return {
+        "notice_id": str(manifest["notice_id"]),
+        "notice_no": manifest.get("notice_no"),
+        "case_no": manifest.get("case_no"),
+        "archive_no": manifest.get("archive_no"),
+        "web_datetime": manifest.get("web_datetime"),
+        "issuer_unit_name": manifest.get("issuer_unit_name"),
+        "subject_type": manifest.get("subject_type"),
+        "parties": parties,
+        "manifest": manifest,
+        "package_path": str(package_path.resolve()),
+        "package_sha256": manifest["package"]["sha256"],
+        "search_text": normalize(searchable),
+    }
+
+
 class CatalogStore:
     def __init__(self, db_path: str | Path):
         self.path = Path(db_path)
@@ -43,21 +68,16 @@ class CatalogStore:
         return db
 
     def upsert(self, manifest: dict, package_path: Path) -> None:
-        parties = manifest.get("parties") or []
-        searchable = " ".join(str(manifest.get(key) or "") for key in (
-            "notice_no", "case_no", "archive_no", "issuer_unit_name",
-            "subject_type", "document_type", "notice_text", "other_data_description",
-        )) + " " + " ".join(
-            f"{item.get('role') or ''} {item.get('name') or ''}"
-            for item in parties if isinstance(item, dict)
-        )
+        self.upsert_record(_record_from_manifest(manifest, package_path))
+
+    def upsert_record(self, record: dict[str, Any]) -> None:
         values = (
-            str(manifest["notice_id"]), manifest.get("notice_no"), manifest.get("case_no"),
-            manifest.get("archive_no"), manifest.get("web_datetime"),
-            manifest.get("issuer_unit_name"), manifest.get("subject_type"),
-            json.dumps(parties, ensure_ascii=False),
-            json.dumps(manifest, ensure_ascii=False), str(package_path.resolve()),
-            manifest["package"]["sha256"], normalize(searchable),
+            record["notice_id"], record.get("notice_no"), record.get("case_no"),
+            record.get("archive_no"), record.get("web_datetime"),
+            record.get("issuer_unit_name"), record.get("subject_type"),
+            json.dumps(record["parties"], ensure_ascii=False),
+            json.dumps(record["manifest"], ensure_ascii=False), record["package_path"],
+            record["package_sha256"], record["search_text"],
         )
         with self._connect() as db:
             db.execute("""

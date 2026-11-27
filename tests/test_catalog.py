@@ -54,6 +54,27 @@ def test_pair_is_validated_indexed_and_searched(tmp_path):
     assert store.search("علي رضايي")[0]["notice_no"] == "140500123"
 
 
+def test_rescan_is_idempotent_and_preserves_party_order(tmp_path):
+    archive = make_pair(tmp_path)
+    manifest_path = archive.with_suffix(".cmf")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["parties"] = [
+        {"role": "خواهان", "name": "علی رضایی"},
+        {"role": "خوانده", "name": "مریم احمدی"},
+    ]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    store = CatalogStore(tmp_path / "catalog.sqlite")
+
+    assert scan_exchange(tmp_path, store)["indexed"] == 1
+    assert scan_exchange(tmp_path, store)["indexed"] == 1
+
+    results = store.search("۱۲۳")
+    assert len(results) == 1
+    assert results[0]["parties"] == manifest["parties"]
+
+
 def test_tampered_zip_is_rejected(tmp_path):
     archive = make_pair(tmp_path)
     archive.write_bytes(archive.read_bytes() + b"tampered")
