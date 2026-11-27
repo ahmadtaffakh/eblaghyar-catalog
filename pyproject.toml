@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eblaghyar-catalog"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Standalone intranet index for Eblaghyar notice packages"
 requires-python = ">=3.11"
 
 [project.scripts]
 eblaghyar-catalog = "eblaghyar_catalog.cli:main"
+eblaghyar-catalog-ui = "eblaghyar_catalog.ui:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -17,3 +18,9 @@ pythonpath = ["src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "eblaghyar_catalog.__version__"}
+
+[tool.setuptools.package-data]
+eblaghyar_catalog = ["assets/*.png", "assets/*.ico"]

@@ -104,6 +104,26 @@ def _artifact_path(record: Any) -> Any:
     return record.get("path") if isinstance(record, dict) else None
 
 
+def _read_ocr_text(
+    notice_folders: tuple[Path, ...], artifact_roots: tuple[Path, ...]
+) -> str:
+    parts = []
+    for folder in notice_folders:
+        ocr_folder = folder / "ocr_text"
+        if not ocr_folder.is_dir() or not _inside(ocr_folder, artifact_roots):
+            continue
+        for path in sorted(ocr_folder.glob("*.txt")):
+            if path.name == "000_notice_text.txt" or not _inside(path, artifact_roots):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if text:
+                parts.append(text)
+    return "\n\n".join(parts)
+
+
 def _adapt_notice(
     notice: dict[str, Any],
     repository_root: Path,
@@ -152,10 +172,12 @@ def _adapt_notice(
         "case_no": notice.get("case_no"),
         "archive_no": notice.get("archive_no"),
         "web_datetime": notice.get("web_datetime"),
+        "issue_date": notice.get("issue_date"),
         "issuer_unit_name": notice.get("issuer_unit_name"),
         "subject_type": notice.get("subject_type"),
         "notice_text": notice.get("notice_text"),
         "other_data_description": notice.get("other_data_description"),
+        "ocr_text": _read_ocr_text(folders, artifact_roots),
         "parties": list(notice.get("parties") or []),
         "attachment_ids": attachment_ids,
         "notice_source_path": notice_path,

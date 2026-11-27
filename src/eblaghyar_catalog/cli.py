@@ -4,7 +4,7 @@ import argparse
 import json
 
 from .exchange import publish_request
-from .ingest import scan_exchange
+from .ingest import scan_exchange, scan_historical
 from .store import CatalogStore
 
 
@@ -14,6 +14,9 @@ def main() -> int:
     scan = sub.add_parser("scan")
     scan.add_argument("--exchange-dir", required=True)
     scan.add_argument("--db", required=True)
+    historical = sub.add_parser("import-historical")
+    historical.add_argument("--source-root", required=True)
+    historical.add_argument("--db", required=True)
     search = sub.add_parser("search")
     search.add_argument("--db", required=True)
     search.add_argument("--query", required=True)
@@ -24,6 +27,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "scan":
         result = scan_exchange(args.exchange_dir, CatalogStore(args.db))
+    elif args.command == "import-historical":
+        result = scan_historical(args.source_root, CatalogStore(args.db))
     elif args.command == "search":
         result = CatalogStore(args.db).search(args.query, args.limit)
     else:

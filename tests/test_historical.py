@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 from eblaghyar_catalog.historical import iter_historical_records
+from eblaghyar_catalog.ingest import scan_historical
+from eblaghyar_catalog.store import CatalogStore
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -100,6 +102,24 @@ def test_historical_adapter_marks_wrong_owner_incomplete(tmp_path):
     assert record["incomplete_reasons"] == ["attachment_owner_mismatch:a-1"]
 
 
+def test_historical_adapter_reads_existing_ocr_sidecars_without_changing_them(
+    tmp_path,
+):
+    _, notice_file, _ = make_source(tmp_path)
+    ocr_dir = notice_file.parent / "ocr_text"
+    ocr_dir.mkdir()
+    notice_sidecar = ocr_dir / "000_notice_text.txt"
+    notice_sidecar.write_text("مهلت اعتراض", encoding="utf-8")
+    attachment_sidecar = ocr_dir / "001_attachment.pdf.txt"
+    attachment_sidecar.write_text("متن OCR ضمیمه", encoding="utf-8")
+    before = attachment_sidecar.read_bytes(), attachment_sidecar.stat().st_mtime_ns
+
+    record = next(iter_historical_records(tmp_path))
+
+    assert record["ocr_text"] == "متن OCR ضمیمه"
+    assert (attachment_sidecar.read_bytes(), attachment_sidecar.stat().st_mtime_ns) == before
+
+
 def test_historical_adapter_marks_missing_file_incomplete(tmp_path):
     make_source(tmp_path, attachment_file=False)
 
@@ -148,3 +168,51 @@ def test_historical_adapter_streams_without_enumerating_every_notice(
     record = next(iter_historical_records(tmp_path))
 
     assert record["notice_id"] == "n-1"
+
+
+def test_historical_scan_indexes_once_and_keeps_source_read_only(tmp_path):
+    repository, notice_file, rendered_file = make_source(tmp_path)
+    source_files = [
+        repository / "notices" / "items" / "n-1.json",
+        repository / "attachments" / "items" / "a-1.json",
+        notice_file,
+        rendered_file,
+    ]
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in source_files
+    }
+    store = CatalogStore(tmp_path / "catalog.sqlite")
+
+    first = scan_historical(tmp_path, store)
+    second = scan_historical(tmp_path, store)
+
+    assert first == {
+        "scanned": 1,
+        "indexed": 1,
+        "unchanged": 0,
+        "incomplete": 0,
+        "errors": [],
+        "stopped": False,
+    }
+    assert second["indexed"] == 0
+    assert second["unchanged"] == 1
+    result = store.search("علي رضايي")[0]
+    assert result["notice_no"] == "140500123"
+    assert result["parties"][0]["role"] == "خواهان"
+    assert result["source_kind"] == "historical"
+    assert result["source_complete"] is True
+    assert result["package_available"] is False
+    for path, expected in before.items():
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == expected
+
+
+def test_historical_scan_indexes_incomplete_record_with_reason(tmp_path):
+    make_source(tmp_path, attachment_file=False)
+    store = CatalogStore(tmp_path / "catalog.sqlite")
+
+    summary = scan_historical(tmp_path, store)
+    result = store.search("140500123")[0]
+
+    assert summary["incomplete"] == 1
+    assert result["source_complete"] is False
+    assert result["incomplete_reasons"] == ["attachment_file_missing:a-1"]

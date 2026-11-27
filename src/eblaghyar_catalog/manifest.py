@@ -134,3 +134,25 @@ def read_pair(zip_path: str | Path) -> dict[str, Any]:
     _validate_archive(archive_path, manifest, notice_id, attachment_ids)
     _validate_pargar(archive_path, manifest)
     return manifest
+
+
+def copy_validated_archive(zip_path: str | Path, destination: str | Path) -> Path:
+    source = Path(zip_path)
+    manifest = read_pair(source)
+    target = Path(destination)
+    created = False
+    try:
+        with source.open("rb") as input_stream, target.open("xb") as output_stream:
+            created = True
+            for chunk in iter(lambda: input_stream.read(1024 * 1024), b""):
+                output_stream.write(chunk)
+        package = manifest["package"]
+        if target.stat().st_size != int(package["size"]):
+            raise ManifestValidationError("copied ZIP size does not match CMF")
+        if sha256_file(target) != str(package["sha256"]).lower():
+            raise ManifestValidationError("copied ZIP hash does not match CMF")
+    except Exception:
+        if created:
+            target.unlink(missing_ok=True)
+        raise
+    return target

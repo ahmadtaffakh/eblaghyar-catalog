@@ -1,5 +1,7 @@
 # Eblaghyar Catalog
 
+نسخه فعلی: **0.2.1** — [راهنمای فارسی کاربر](USER-GUIDE-FA.md)
+
 کاتالوگ مستقل اینترانتی برای نمایه‌سازی و جست‌وجوی بسته‌های ابلاغیار است. این
 پروژه منبع حقیقت پرونده، دریافت‌کنندهٔ ثنا یا مالک گردش‌کار حقوقی نیست.
 
@@ -36,6 +38,12 @@ python -m pip install -e .
 python -m eblaghyar_catalog.cli scan --exchange-dir X:\CatalogExchange --db C:\ProgramData\EblaghyarCatalog\catalog.sqlite
 python -m eblaghyar_catalog.cli search --db C:\ProgramData\EblaghyarCatalog\catalog.sqlite --query "شماره یا نام"
 python -m eblaghyar_catalog.cli request --exchange-dir X:\CatalogExchange --notice-no 140500123
+python -m eblaghyar_catalog.cli import-historical --source-root D:\EblaghyarDownloads --db C:\ProgramData\EblaghyarCatalog\catalog.sqlite
+python -m eblaghyar_catalog.ui
 ```
 
 دیتابیس فعال باید روی دیسک محلی باشد و مستقیماً از Share مشترک باز نشود.
+
+رابط دسکتاپ دو بخش مدیریت و جست‌وجو دارد. ورود اطلاعات تاریخی Repository را
+فقط به‌صورت read-only می‌خواند؛ وجود فایل‌های تاریخی به معنی آماده‌بودن ZIP
+نیست و رابط این رکوردها را با وضعیت «فقط سابقه» نمایش می‌دهد.
