@@ -82,6 +82,37 @@ def test_tampered_zip_is_rejected(tmp_path):
         read_pair(archive)
 
 
+def test_unsupported_manifest_schema_is_rejected(tmp_path):
+    archive = make_pair(tmp_path)
+    manifest_path = archive.with_suffix(".cmf")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 3
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+
+    with pytest.raises(ManifestValidationError, match="unsupported CMF schema"):
+        read_pair(archive)
+
+
+def test_unsafe_zip_member_is_rejected(tmp_path):
+    archive = make_pair(tmp_path)
+    manifest_path = archive.with_suffix(".cmf")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("../notice.pdf", b"notice")
+        output.writestr("attachment.pdf", b"attachment")
+    manifest["files"][0]["filename"] = "../notice.pdf"
+    manifest["package"]["size"] = archive.stat().st_size
+    manifest["package"]["sha256"] = sha256_file(archive)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+
+    with pytest.raises(ManifestValidationError, match="unsafe path"):
+        read_pair(archive)
+
+
 def test_request_uses_flat_non_json_name_and_records_user(monkeypatch, tmp_path):
     monkeypatch.setattr("eblaghyar_catalog.exchange.active_directory_username", lambda: "ORG\\user")
     path = publish_request(tmp_path, "140500123")
