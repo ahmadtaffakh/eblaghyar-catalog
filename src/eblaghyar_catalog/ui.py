@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +124,48 @@ def request_status_text(status: str) -> str:
         "ready": "✓ بسته آماده",
         "failed": "ناموفق",
     }.get(status, status or "نامشخص")
+
+
+def request_datetime_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+
+    year = parsed.year
+    month = parsed.month
+    day = parsed.day
+    month_days = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+    adjusted_year = year + 1 if month > 2 else year
+    days = (
+        355666
+        + 365 * year
+        + (adjusted_year + 3) // 4
+        - (adjusted_year + 99) // 100
+        + (adjusted_year + 399) // 400
+        + day
+        + month_days[month - 1]
+    )
+    jalali_year = -1595 + 33 * (days // 12053)
+    days %= 12053
+    jalali_year += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jalali_year += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jalali_month = 1 + days // 31
+        jalali_day = 1 + days % 31
+    else:
+        jalali_month = 7 + (days - 186) // 30
+        jalali_day = 1 + (days - 186) % 30
+    return (
+        f"{jalali_year:04d}/{jalali_month:02d}/{jalali_day:02d} "
+        f"{parsed:%H:%M:%S}"
+    )
 
 
 def record_details_text(item: dict[str, Any]) -> str:
@@ -875,8 +918,8 @@ def main() -> int:
             request_tree.insert("", "end", iid=request_id, values=(
                 request_status_text(str(item.get("status") or "")),
                 detail,
-                item.get("updated_at") or "—",
-                item.get("created_at") or "—",
+                request_datetime_text(item.get("updated_at")),
+                request_datetime_text(item.get("created_at")),
                 item.get("notice_no") or "—",
             ), tags=tags)
         request_dialog["items"] = request_items

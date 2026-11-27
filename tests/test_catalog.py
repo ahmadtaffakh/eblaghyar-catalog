@@ -24,11 +24,21 @@ from eblaghyar_catalog.ui import (
     party_names_text,
     record_details_text,
     record_status,
+    request_datetime_text,
     request_status_text,
     save_settings,
     summary_text,
     table_sort_key,
 )
+
+
+def test_request_datetime_text_converts_iso_date_to_jalali_for_display():
+    assert request_datetime_text("2026-11-27T10:00:00+00:00") == "1405/09/06 10:00:00"
+
+
+def test_request_datetime_text_preserves_unrecognized_values_and_handles_empty():
+    assert request_datetime_text("تاریخ نامعتبر") == "تاریخ نامعتبر"
+    assert request_datetime_text("") == "—"
 
 
 def make_pair(root: Path):
