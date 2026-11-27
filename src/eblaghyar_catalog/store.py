@@ -256,3 +256,12 @@ class CatalogStore:
                 ORDER BY web_datetime DESC, notice_no, notice_id LIMIT ?
             """, (limit,)).fetchall()
         return [_result_from_row(row) for row in rows]
+
+    def notice_counts(self) -> dict[str, int]:
+        with self._connect() as db:
+            row = db.execute("""
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(source_complete), 0) AS complete
+                FROM notices
+            """).fetchone()
+        return {"total": int(row["total"]), "complete": int(row["complete"])}

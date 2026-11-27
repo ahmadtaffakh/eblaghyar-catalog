@@ -103,3 +103,24 @@ def list_user_requests(
         key=lambda item: (item["updated_at"], item["created_at"], item["request_id"]),
         reverse=True,
     )
+
+
+def ready_package_path(exchange_dir: str | Path, package_name: str) -> Path:
+    root = Path(exchange_dir).resolve()
+    name = str(package_name or "").strip()
+    relative = Path(name)
+    if (
+        not name
+        or relative.is_absolute()
+        or relative.name != name
+        or relative.suffix.lower() != ".zip"
+    ):
+        raise ValueError("invalid ready package name")
+    package = (root / relative).resolve()
+    try:
+        package.relative_to(root)
+    except ValueError as error:
+        raise ValueError("ready package is outside the exchange directory") from error
+    if not package.is_file():
+        raise FileNotFoundError(package)
+    return package

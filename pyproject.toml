@@ -7,6 +7,10 @@ name = "eblaghyar-catalog"
 dynamic = ["version"]
 description = "Standalone intranet index for Eblaghyar notice packages"
 requires-python = ">=3.11"
+dependencies = [
+    "Pillow>=10",
+    "pystray>=0.19.5",
+]
 
 [project.scripts]
 eblaghyar-catalog = "eblaghyar_catalog.cli:main"

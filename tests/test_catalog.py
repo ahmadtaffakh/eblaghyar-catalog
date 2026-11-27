@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from eblaghyar_catalog.exchange import list_user_requests, publish_request
+from eblaghyar_catalog.exchange import (
+    list_user_requests,
+    publish_request,
+    ready_package_path,
+)
 from eblaghyar_catalog.ingest import scan_exchange
 from eblaghyar_catalog.manifest import (
     ManifestValidationError,
@@ -16,10 +20,12 @@ from eblaghyar_catalog.manifest import (
 from eblaghyar_catalog.store import CatalogStore
 from eblaghyar_catalog.ui import (
     incomplete_reason_text,
+    load_settings,
     party_names_text,
     record_details_text,
     record_status,
     request_status_text,
+    save_settings,
     summary_text,
     table_sort_key,
 )
@@ -61,6 +67,60 @@ def make_pair(root: Path):
     }
     archive.with_suffix(".cmf").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     return archive
+
+
+def test_settings_round_trip_is_atomic_and_preserves_unicode_paths(tmp_path):
+    path = tmp_path / "settings.json"
+    values = {
+        "source_root": r"F:\دریافت ابلاغیار",
+        "admin_db": r"C:\ProgramData\EblaghyarCatalog\catalog.sqlite",
+        "exchange_dir": r"X:\تبادل کاتالوگ",
+        "viewer_db": r"C:\Users\کاربر\catalog.sqlite",
+    }
+
+    save_settings(path, values)
+
+    assert load_settings(path, {}) == values
+    assert path.is_file()
+    assert not path.with_suffix(".json.part").exists()
+
+
+def test_settings_use_defaults_when_file_is_missing_or_invalid(tmp_path):
+    path = tmp_path / "settings.json"
+    defaults = {
+        "source_root": "",
+        "admin_db": "default-admin.sqlite",
+        "exchange_dir": "",
+        "viewer_db": "default-viewer.sqlite",
+    }
+
+    assert load_settings(path, defaults) == defaults
+    path.write_text("{broken", encoding="utf-8")
+    assert load_settings(path, defaults) == defaults
+
+
+def test_settings_ignore_unknown_and_non_string_values(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "source_root": "saved-source",
+        "admin_db": 123,
+        "unknown": "ignored",
+    }), encoding="utf-8")
+
+    loaded = load_settings(path, {
+        "source_root": "",
+        "admin_db": "default.sqlite",
+        "exchange_dir": "",
+        "viewer_db": "viewer.sqlite",
+    })
+
+    assert loaded == {
+        "source_root": "saved-source",
+        "admin_db": "default.sqlite",
+        "exchange_dir": "",
+        "viewer_db": "viewer.sqlite",
+    }
 
 
 def test_pair_is_validated_indexed_and_searched(tmp_path):
@@ -183,7 +243,17 @@ def test_request_status_lists_only_current_users_complete_files(monkeypatch, tmp
     assert items[0]["notice_no"] == "140500123"
     assert items[0]["status"] == "ready"
     assert items[0]["package_name"] == "notice.zip"
-    assert request_status_text(items[0]["status"]) == "بسته آماده"
+    assert request_status_text(items[0]["status"]) == "✓ بسته آماده"
+
+
+def test_ready_package_path_accepts_only_flat_zip_in_exchange(tmp_path):
+    archive = make_pair(tmp_path)
+
+    assert ready_package_path(tmp_path, archive.name) == archive.resolve()
+
+    for package_name in ("", "missing.zip", "../notice.zip", "folder/notice.zip", "notice.cmf"):
+        with pytest.raises((FileNotFoundError, ValueError)):
+            ready_package_path(tmp_path, package_name)
 
 
 def test_ui_summary_reports_historical_scan_counts():
@@ -267,6 +337,31 @@ def test_recent_returns_latest_notices_without_changing_empty_search(tmp_path):
     assert [item["notice_id"] for item in store.recent()] == ["newer", "older"]
     assert store.recent(1)[0]["notice_id"] == "newer"
     assert store.search("") == []
+
+
+def test_notice_counts_include_all_records_and_only_complete_sources(tmp_path):
+    store = CatalogStore(tmp_path / "catalog.sqlite")
+    common = {
+        "case_no": None,
+        "archive_no": None,
+        "web_datetime": None,
+        "issuer_unit_name": None,
+        "subject_type": None,
+        "parties": [],
+        "manifest": {},
+        "package_path": "",
+        "package_sha256": "",
+        "search_text": "",
+        "incomplete_reasons": [],
+    }
+    store.upsert_record({
+        **common, "notice_id": "complete", "notice_no": "1", "source_complete": True
+    })
+    store.upsert_record({
+        **common, "notice_id": "incomplete", "notice_no": "2", "source_complete": False
+    })
+
+    assert store.notice_counts() == {"total": 2, "complete": 1}
 
 
 def test_historical_record_does_not_replace_valid_package(tmp_path):

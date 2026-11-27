@@ -1,2 +1,3 @@
 [console_scripts]
 eblaghyar-catalog = eblaghyar_catalog.cli:main
+eblaghyar-catalog-ui = eblaghyar_catalog.ui:main

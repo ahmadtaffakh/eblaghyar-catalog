@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import json
+import os
 import queue
 import re
 import threading
@@ -8,10 +10,52 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .exchange import list_user_requests, publish_request
+from .exchange import list_user_requests, publish_request, ready_package_path
 from .ingest import scan_exchange, scan_historical
 from .manifest import ManifestValidationError, copy_validated_archive
 from .store import CatalogStore, normalize
+
+
+SETTINGS_SCHEMA_VERSION = 1
+SETTINGS_KEYS = ("source_root", "admin_db", "exchange_dir", "viewer_db")
+
+
+def settings_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    return root / "EblaghyarCatalog" / "settings.json"
+
+
+def load_settings(path: str | Path, defaults: dict[str, str]) -> dict[str, str]:
+    values = {key: str(defaults.get(key) or "") for key in SETTINGS_KEYS}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return values
+    if not isinstance(data, dict) or data.get("schema_version") != SETTINGS_SCHEMA_VERSION:
+        return values
+    for key in SETTINGS_KEYS:
+        if isinstance(data.get(key), str):
+            values[key] = data[key]
+    return values
+
+
+def save_settings(path: str | Path, values: dict[str, str]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".part")
+    payload = {
+        "schema_version": SETTINGS_SCHEMA_VERSION,
+        **{key: str(values.get(key) or "") for key in SETTINGS_KEYS},
+    }
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(temporary, target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def summary_text(result: dict[str, Any]) -> str:
@@ -76,7 +120,7 @@ def request_status_text(status: str) -> str:
         "queued": "در صف",
         "processing": "در حال پردازش",
         "needs_acquisition": "نیازمند واکشی از ثنا",
-        "ready": "بسته آماده",
+        "ready": "✓ بسته آماده",
         "failed": "ناموفق",
     }.get(status, status or "نامشخص")
 
@@ -179,6 +223,7 @@ def main() -> int:
         fieldbackground="#FFFFFF",
         foreground="#263746",
         borderwidth=0,
+        font=("Segoe UI", 10, "bold"),
     )
     style.configure(
         "Treeview.Heading",
@@ -233,19 +278,49 @@ def main() -> int:
         widget.bind("<Leave>", hide, add="+")
         widget.bind("<ButtonPress>", hide, add="+")
 
-    default_db = Path.home() / "AppData" / "Local" / "EblaghyarCatalog" / "catalog.sqlite"
-    admin_db_var = tk.StringVar(value=str(default_db))
-    viewer_db_var = tk.StringVar(value=str(default_db))
-    source_var = tk.StringVar()
-    exchange_var = tk.StringVar()
+    config_path = settings_path()
+    default_db = config_path.with_name("catalog.sqlite")
+    persisted = load_settings(config_path, {
+        "source_root": "",
+        "admin_db": str(default_db),
+        "exchange_dir": "",
+        "viewer_db": str(default_db),
+    })
+    admin_db_var = tk.StringVar(value=persisted["admin_db"])
+    viewer_db_var = tk.StringVar(value=persisted["viewer_db"])
+    source_var = tk.StringVar(value=persisted["source_root"])
+    exchange_var = tk.StringVar(value=persisted["exchange_dir"])
     query_var = tk.StringVar()
     admin_status = tk.StringVar(value="آماده")
     viewer_status = tk.StringVar(value="عبارت جست‌وجو را وارد کنید")
+    total_notices_var = tk.StringVar(value="کل ابلاغیه‌ها: —")
+    complete_notices_var = tk.StringVar(value="ابلاغیه‌های کامل: —")
     events: queue.Queue[tuple[str, Any]] = queue.Queue()
     stop_event = threading.Event()
     active = {"value": False}
     records: dict[str, dict[str, Any]] = {}
     request_dialog: dict[str, Any] = {}
+
+    def current_settings() -> dict[str, str]:
+        return {
+            "source_root": source_var.get().strip(),
+            "admin_db": admin_db_var.get().strip(),
+            "exchange_dir": exchange_var.get().strip(),
+            "viewer_db": viewer_db_var.get().strip(),
+        }
+
+    def save_current_settings(*, show_error: bool = False) -> bool:
+        try:
+            save_settings(config_path, current_settings())
+        except OSError as error:
+            if show_error:
+                messagebox.showerror(
+                    "ذخیره تنظیمات ناموفق بود",
+                    f"تنظیمات ذخیره نشد:\n{error}",
+                    parent=root,
+                )
+            return False
+        return True
 
     header = tk.Frame(root, background="#173F5F", padx=20, pady=10)
     header.pack(fill="x", padx=12, pady=(12, 0))
@@ -269,13 +344,48 @@ def main() -> int:
         justify="right",
         font=("Segoe UI", 9),
     ).pack(anchor="e")
+    stats_box = tk.Frame(header, background="#173F5F")
+    stats_box.pack(side="right", padx=32)
+    tk.Label(
+        stats_box,
+        textvariable=total_notices_var,
+        background="#173F5F",
+        foreground="#FFFFFF",
+        font=("Segoe UI", 11, "bold"),
+        padx=12,
+    ).pack(side="right")
+    tk.Label(
+        stats_box,
+        textvariable=complete_notices_var,
+        background="#173F5F",
+        foreground="#A9E5BB",
+        font=("Segoe UI", 11, "bold"),
+        padx=12,
+    ).pack(side="right")
+    exit_button = tk.Button(
+        header,
+        text="خروج",
+        background="#C62828",
+        activebackground="#A91F1F",
+        foreground="#FFFFFF",
+        activeforeground="#FFFFFF",
+        relief="flat",
+        cursor="hand2",
+        padx=20,
+        pady=7,
+        font=("Segoe UI", 10, "bold"),
+        command=lambda: exit_application(),
+    )
+    exit_button.pack(side="left")
+    add_tooltip(exit_button, "خروج کامل از برنامه")
 
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True, padx=12, pady=(8, 12))
     admin = ttk.Frame(notebook, padding=14)
     viewer = ttk.Frame(notebook, padding=14)
-    notebook.add(viewer, text="جست‌وجوی ابلاغیه‌ها")
     notebook.add(admin, text="تنظیمات")
+    notebook.add(viewer, text="جست‌وجوی ابلاغیه‌ها")
+    notebook.select(viewer)
 
     admin.columnconfigure(1, weight=1)
 
@@ -283,6 +393,7 @@ def main() -> int:
         selected = filedialog.askdirectory(initialdir=variable.get() or None)
         if selected:
             variable.set(selected)
+            save_current_settings(show_error=True)
 
     def choose_database(variable: tk.StringVar) -> None:
         selected = filedialog.asksaveasfilename(
@@ -292,13 +403,20 @@ def main() -> int:
         )
         if selected:
             variable.set(selected)
+            save_current_settings(show_error=True)
 
     def path_row(row: int, title: str, variable: tk.StringVar, command: Any) -> None:
         ttk.Label(admin, text=title, anchor="e").grid(
             row=row, column=2, padx=(8, 0), pady=7, sticky="e"
         )
-        ttk.Entry(admin, textvariable=variable, justify="right").grid(
+        entry = ttk.Entry(admin, textvariable=variable, justify="right")
+        entry.grid(
             row=row, column=1, pady=7, sticky="ew"
+        )
+        entry.bind(
+            "<FocusOut>",
+            lambda _event: save_current_settings(show_error=True),
+            add="+",
         )
         button = ttk.Button(admin, text="انتخاب…", command=command)
         button.grid(row=row, column=0, padx=(0, 8), pady=7)
@@ -390,6 +508,10 @@ def main() -> int:
                     finish_request_statuses(value, None)
                 elif kind == "request_status_error":
                     finish_request_statuses(None, value)
+                elif kind == "show_application":
+                    restore_application()
+                elif kind == "exit_application":
+                    finish_exit()
         except queue.Empty:
             pass
         root.after(100, poll_events)
@@ -565,7 +687,14 @@ def main() -> int:
         font=("Segoe UI", 10, "bold"),
     ).grid(row=0, column=1, sticky="e")
 
-    details_frame = ttk.Frame(viewer)
+    details_frame = tk.Frame(
+        viewer,
+        background="#FFFFFF",
+        highlightbackground="#B8C9D6",
+        highlightcolor="#0B6E99",
+        highlightthickness=1,
+        bd=0,
+    )
     details_frame.grid(row=4, column=0, sticky="nsew")
     details_frame.columnconfigure(0, weight=1)
     details_frame.rowconfigure(0, weight=1)
@@ -575,14 +704,15 @@ def main() -> int:
         wrap="word",
         state="disabled",
         relief="flat",
-        padx=14,
-        pady=12,
+        bd=0,
+        padx=18,
+        pady=14,
         spacing1=2,
         spacing3=4,
         background="#FFFFFF",
         foreground="#263746",
         selectbackground="#B7D9EA",
-        font=("Segoe UI", 10),
+        font=("Segoe UI", 10, "bold"),
     )
     details.grid(row=0, column=0, sticky="nsew")
     details_scroll = ttk.Scrollbar(
@@ -590,6 +720,15 @@ def main() -> int:
     )
     details_scroll.grid(row=0, column=1, sticky="ns")
     details.configure(yscrollcommand=details_scroll.set)
+    details.tag_configure(
+        "rtl",
+        justify="right",
+        lmargin1=12,
+        lmargin2=12,
+        rmargin=12,
+        spacing1=3,
+        spacing3=5,
+    )
     tree.tag_configure("odd", background="#F7FAFC")
 
     def copy_details(*, selected_only: bool = False) -> None:
@@ -626,22 +765,14 @@ def main() -> int:
         selected = tree.selection()
         return records.get(selected[0]) if selected else None
 
-    def download_package() -> None:
-        item = selected_record()
-        if not item or not item.get("package_available"):
-            messagebox.showwarning(
-                "بسته موجود نیست",
-                "برای این ابلاغیه هنوز بسته معتبر ZIP/CMF موجود نیست.",
-                parent=root,
-            )
-            return
-        source = Path(item["package_path"])
+    def save_package_as(source: Path, parent: tk.Misc) -> None:
         destination = filedialog.asksaveasfilename(
             title="ذخیره بسته ابلاغیه",
             initialfile=source.name,
             defaultextension=".zip",
             filetypes=[("ZIP", "*.zip")],
             confirmoverwrite=False,
+            parent=parent,
         )
         if not destination:
             return
@@ -651,15 +782,26 @@ def main() -> int:
             messagebox.showerror(
                 "فایل موجود است",
                 "برای جلوگیری از overwrite، نام یا مسیر دیگری انتخاب کنید.",
-                parent=root,
+                parent=parent,
             )
             return
         except (ManifestValidationError, OSError) as error:
-            messagebox.showerror("دریافت ناموفق", str(error), parent=root)
+            messagebox.showerror("دریافت ناموفق", str(error), parent=parent)
             return
         messagebox.showinfo(
-            "دریافت انجام شد", f"بسته در این مسیر ذخیره شد:\n{target}", parent=root
+            "دریافت انجام شد", f"بسته در این مسیر ذخیره شد:\n{target}", parent=parent
         )
+
+    def download_package() -> None:
+        item = selected_record()
+        if not item or not item.get("package_available"):
+            messagebox.showwarning(
+                "بسته موجود نیست",
+                "برای این ابلاغیه هنوز بسته معتبر ZIP/CMF موجود نیست.",
+                parent=root,
+            )
+            return
+        save_package_as(Path(item["package_path"]), root)
 
     def request_acquisition() -> None:
         item = selected_record()
@@ -720,17 +862,24 @@ def main() -> int:
         request_tree = request_dialog["tree"]
         request_tree.delete(*request_tree.get_children())
         assert items is not None
+        request_items = {}
         for index, item in enumerate(items):
             detail = item.get("detail") or "—"
             if item.get("package_name"):
                 detail = f"{detail} | {item['package_name']}"
-            request_tree.insert("", "end", values=(
+            request_id = str(item.get("request_id") or index)
+            request_items[request_id] = item
+            tags = ["odd"] if index % 2 else []
+            if item.get("status") == "ready":
+                tags.append("ready")
+            request_tree.insert("", "end", iid=request_id, values=(
                 request_status_text(str(item.get("status") or "")),
                 detail,
                 item.get("updated_at") or "—",
                 item.get("created_at") or "—",
                 item.get("notice_no") or "—",
-            ), tags=("odd",) if index % 2 else ())
+            ), tags=tags)
+        request_dialog["items"] = request_items
         status_var.set(
             f"{len(items)} درخواست" if items else "درخواستی برای این کاربر ثبت نشده است"
         )
@@ -820,6 +969,28 @@ def main() -> int:
         request_scroll.grid(row=0, column=1, sticky="ns")
         request_tree.configure(yscrollcommand=request_scroll.set)
         request_tree.tag_configure("odd", background="#F7FAFC")
+        request_tree.tag_configure("ready", foreground="#16803A")
+
+        def download_ready_request(event: Any) -> None:
+            row = request_tree.identify_row(event.y)
+            if not row:
+                return
+            request_tree.selection_set(row)
+            item = request_dialog.get("items", {}).get(row)
+            if not item or item.get("status") != "ready":
+                return
+            try:
+                source = ready_package_path(
+                    exchange_var.get().strip(), str(item.get("package_name") or "")
+                )
+            except (OSError, ValueError) as error:
+                messagebox.showerror(
+                    "دریافت ناموفق",
+                    f"فایل بسته آماده در مسیر تبادل معتبر یا قابل دسترس نیست:\n{error}",
+                    parent=window,
+                )
+                return
+            save_package_as(source, window)
 
         def close_dialog() -> None:
             request_dialog.clear()
@@ -832,6 +1003,7 @@ def main() -> int:
             refresh=refresh,
         )
         refresh.configure(command=refresh_request_statuses)
+        request_tree.bind("<Double-1>", download_ready_request)
         window.protocol("WM_DELETE_WINDOW", close_dialog)
         refresh_request_statuses()
 
@@ -857,7 +1029,7 @@ def main() -> int:
         )
         details.configure(state="normal")
         details.delete("1.0", "end")
-        details.insert("1.0", record_details_text(item))
+        details.insert("1.0", record_details_text(item), ("rtl",))
         details.see("1.0")
         details.configure(state="disabled")
 
@@ -866,9 +1038,12 @@ def main() -> int:
         try:
             store = CatalogStore(viewer_db_var.get())
             result = store.search(needle, 100) if needle else store.recent(100)
+            counts = store.notice_counts()
         except Exception as error:
             messagebox.showerror("خطا", str(error), parent=root)
             return
+        total_notices_var.set(f"کل ابلاغیه‌ها: {counts['total']}")
+        complete_notices_var.set(f"ابلاغیه‌های کامل: {counts['complete']}")
         tree.delete(*tree.get_children())
         records.clear()
         reset_table_sort()
@@ -928,6 +1103,62 @@ def main() -> int:
     clear_button.configure(command=clear_search)
     query_entry.bind("<Return>", lambda _event: search_now())
     tree.bind("<<TreeviewSelect>>", show_details)
+
+    tray_state: dict[str, Any] = {"icon": None, "exiting": False}
+
+    def restore_application() -> None:
+        root.deiconify()
+        root.state("normal")
+        root.lift()
+        root.focus_force()
+
+    def show_application(_icon: Any = None, _item: Any = None) -> None:
+        events.put(("show_application", None))
+
+    def finish_exit() -> None:
+        save_current_settings(show_error=True)
+        icon = tray_state.get("icon")
+        if icon is not None:
+            icon.stop()
+            tray_state["icon"] = None
+        root.destroy()
+
+    def exit_application(_icon: Any = None, _item: Any = None) -> None:
+        if tray_state["exiting"]:
+            return
+        tray_state["exiting"] = True
+        events.put(("exit_application", None))
+
+    def minimize_to_tray() -> None:
+        if tray_state["icon"] is None:
+            try:
+                import pystray
+                from PIL import Image
+
+                with Image.open(assets_dir / "app-icon.png") as source:
+                    tray_image = source.convert("RGBA").copy()
+                tray_state["icon"] = pystray.Icon(
+                    "eblaghyar-catalog",
+                    tray_image,
+                    "کاتالوگ ابلاغیار",
+                    menu=pystray.Menu(
+                        pystray.MenuItem("نمایش برنامه", show_application, default=True),
+                        pystray.MenuItem("خروج", exit_application),
+                    ),
+                )
+                tray_state["icon"].run_detached()
+            except (ImportError, OSError) as error:
+                tray_state["icon"] = None
+                messagebox.showerror(
+                    "System Tray در دسترس نیست",
+                    f"امکان انتقال برنامه به System Tray وجود ندارد:\n{error}",
+                    parent=root,
+                )
+                return
+        save_current_settings(show_error=False)
+        root.withdraw()
+
+    root.protocol("WM_DELETE_WINDOW", minimize_to_tray)
     root.after(100, poll_events)
     root.after(0, search)
     query_entry.focus_set()
