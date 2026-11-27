@@ -1,0 +1,2 @@
+[console_scripts]
+eblaghyar-catalog = eblaghyar_catalog.cli:main
