@@ -19,6 +19,7 @@ from .store import CatalogStore, normalize
 
 SETTINGS_SCHEMA_VERSION = 1
 SETTINGS_KEYS = ("source_root", "admin_db", "exchange_dir", "viewer_db")
+REQUEST_MONITOR_INTERVAL_MS = 60_000
 
 
 def settings_path() -> Path:
@@ -124,6 +125,18 @@ def request_status_text(status: str) -> str:
         "ready": "✓ بسته آماده",
         "failed": "ناموفق",
     }.get(status, status or "نامشخص")
+
+
+def _ready_request_candidates(
+    items: list[dict], notified_request_ids: set[str]
+) -> list[dict]:
+    return [
+        item
+        for item in items
+        if item.get("status") == "ready"
+        and str(item.get("request_id") or "")
+        and str(item["request_id"]) not in notified_request_ids
+    ]
 
 
 def request_datetime_text(value: Any) -> str:
@@ -343,6 +356,13 @@ def main() -> int:
     active = {"value": False}
     records: dict[str, dict[str, Any]] = {}
     request_dialog: dict[str, Any] = {}
+    request_monitor: dict[str, Any] = {
+        "after": None,
+        "exchange": "",
+        "initialized": False,
+        "notified": set(),
+        "running": False,
+    }
 
     def current_settings() -> dict[str, str]:
         return {
@@ -551,6 +571,10 @@ def main() -> int:
                     finish_request_statuses(value, None)
                 elif kind == "request_status_error":
                     finish_request_statuses(None, value)
+                elif kind == "request_monitor_result":
+                    finish_request_monitor(value)
+                elif kind == "request_monitor_error":
+                    finish_request_monitor(None)
                 elif kind == "show_application":
                     restore_application()
                 elif kind == "exit_application":
@@ -1054,6 +1078,85 @@ def main() -> int:
     request_button.configure(command=request_acquisition)
     requests_button.configure(command=show_request_statuses)
 
+    def notify_ready_requests(items: list[dict]) -> None:
+        valid_items = []
+        exchange = exchange_var.get().strip()
+        for item in items:
+            try:
+                ready_package_path(exchange, str(item.get("package_name") or ""))
+            except (OSError, ValueError):
+                continue
+            valid_items.append(item)
+        if not valid_items:
+            return
+
+        notified = request_monitor["notified"]
+        notified.update(str(item["request_id"]) for item in valid_items)
+        if len(valid_items) == 1:
+            notice_no = str(valid_items[0].get("notice_no") or "").strip() or "درخواستی"
+            message = (
+                f"بسته ابلاغیه {notice_no} آماده است. برای دریافت، "
+                "«وضعیت درخواست‌های من» را باز کنید."
+            )
+            viewer_status.set(f"بسته ابلاغیه {notice_no} آماده شد")
+        else:
+            message = (
+                f"{len(valid_items)} بسته درخواستی آماده است. برای دریافت، "
+                "«وضعیت درخواست‌های من» را باز کنید."
+            )
+            viewer_status.set(f"{len(valid_items)} بسته درخواستی آماده شد")
+
+        if ensure_tray_icon(show_error=False):
+            try:
+                tray_state["icon"].notify(message, "بسته آماده شد")
+            except Exception:
+                root.bell()
+        else:
+            root.bell()
+
+    def finish_request_monitor(items: list[dict] | None) -> None:
+        request_monitor["running"] = False
+        if tray_state["exiting"]:
+            return
+        if items is not None:
+            ready_items = _ready_request_candidates(
+                items, request_monitor["notified"]
+            )
+            if request_monitor["initialized"]:
+                notify_ready_requests(ready_items)
+            else:
+                request_monitor["notified"].update(
+                    str(item["request_id"]) for item in ready_items
+                )
+                request_monitor["initialized"] = True
+        request_monitor["after"] = root.after(
+            REQUEST_MONITOR_INTERVAL_MS, check_request_statuses
+        )
+
+    def check_request_statuses() -> None:
+        request_monitor["after"] = None
+        if request_monitor["running"] or tray_state["exiting"]:
+            return
+        exchange = exchange_var.get().strip()
+        if not exchange:
+            request_monitor["after"] = root.after(
+                REQUEST_MONITOR_INTERVAL_MS, check_request_statuses
+            )
+            return
+        if exchange != request_monitor["exchange"]:
+            request_monitor.update(
+                exchange=exchange, initialized=False, notified=set()
+            )
+        request_monitor["running"] = True
+
+        def target() -> None:
+            try:
+                events.put(("request_monitor_result", list_user_requests(exchange)))
+            except Exception:
+                events.put(("request_monitor_error", None))
+
+        threading.Thread(target=target, daemon=True).start()
+
     def show_details(_event: Any = None) -> None:
         selected = tree.selection()
         if not selected:
@@ -1172,7 +1275,7 @@ def main() -> int:
         tray_state["exiting"] = True
         events.put(("exit_application", None))
 
-    def minimize_to_tray() -> None:
+    def ensure_tray_icon(*, show_error: bool) -> bool:
         if tray_state["icon"] is None:
             try:
                 import pystray
@@ -1192,18 +1295,25 @@ def main() -> int:
                 tray_state["icon"].run_detached()
             except (ImportError, OSError) as error:
                 tray_state["icon"] = None
-                messagebox.showerror(
-                    "System Tray در دسترس نیست",
-                    f"امکان انتقال برنامه به System Tray وجود ندارد:\n{error}",
-                    parent=root,
-                )
-                return
+                if show_error:
+                    messagebox.showerror(
+                        "System Tray در دسترس نیست",
+                        f"امکان انتقال برنامه به System Tray وجود ندارد:\n{error}",
+                        parent=root,
+                    )
+                return False
+        return True
+
+    def minimize_to_tray() -> None:
+        if not ensure_tray_icon(show_error=True):
+            return
         save_current_settings(show_error=False)
         root.withdraw()
 
     root.protocol("WM_DELETE_WINDOW", minimize_to_tray)
     root.after(100, poll_events)
     root.after(0, search)
+    root.after(0, check_request_statuses)
     query_entry.focus_set()
     root.mainloop()
     return 0

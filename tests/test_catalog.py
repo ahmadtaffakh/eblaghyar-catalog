@@ -19,6 +19,7 @@ from eblaghyar_catalog.manifest import (
 )
 from eblaghyar_catalog.store import CatalogStore
 from eblaghyar_catalog.ui import (
+    _ready_request_candidates,
     incomplete_reason_text,
     load_settings,
     party_names_text,
@@ -30,6 +31,31 @@ from eblaghyar_catalog.ui import (
     summary_text,
     table_sort_key,
 )
+
+
+def test_ready_request_candidates_reports_each_request_only_once():
+    items = [
+        {"request_id": "queued", "status": "queued"},
+        {"request_id": "ready-1", "status": "ready"},
+        {"request_id": "ready-2", "status": "ready"},
+        {"request_id": "", "status": "ready"},
+    ]
+
+    candidates = _ready_request_candidates(items, {"ready-1"})
+
+    assert [item["request_id"] for item in candidates] == ["ready-2"]
+    assert _ready_request_candidates(items, {"ready-1", "ready-2"}) == []
+
+
+def test_ready_request_candidates_detects_later_transition_to_ready():
+    notified = {"already-notified"}
+
+    assert _ready_request_candidates(
+        [{"request_id": "request-1", "status": "processing"}], notified
+    ) == []
+    assert _ready_request_candidates(
+        [{"request_id": "request-1", "status": "ready"}], notified
+    ) == [{"request_id": "request-1", "status": "ready"}]
 
 
 def test_request_datetime_text_converts_iso_date_to_jalali_for_display():
